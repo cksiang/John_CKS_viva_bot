@@ -66,5 +66,12 @@ def handle_document(message):
 # Start the Keep-Alive server
 if __name__ == "__main__":
     t = Thread(target=run_flask)
+    t.daemon = True
     t.start()
-    bot.infinity_polling()
+
+    print("Bot is starting...")
+
+try:
+    bot.infinity_polling(skip_pending=True)
+except Exception as e:
+    print(f"Error: {e}")
