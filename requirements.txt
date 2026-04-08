@@ -1,3 +1,4 @@
+PyMuPDF
 pyTelegramBotAPI
 google-generativeai
 supabase
