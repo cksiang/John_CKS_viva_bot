@@ -1,15 +1,23 @@
 import os
 import telebot
 import google.generativeai as genai
+import fitz  # PyMuPDF
+import io
 from supabase import create_client, Client
 from flask import Flask
 from threading import Thread
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
-# 1. Setup Configurations
+# --- 1. CONFIGURATION ---
 TOKEN = os.environ.get('TELEGRAM_TOKEN')
 GEMINI_KEY = os.environ.get('GEMINI_KEY')
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
+SENDER_EMAIL = os.environ.get('SENDER_EMAIL')
+SENDER_PASSWORD = os.environ.get('SENDER_PASSWORD')
+RECEIVER_EMAIL = os.environ.get('RECEIVER_EMAIL')
 
 # Initialize Clients
 bot = telebot.TeleBot(TOKEN)
@@ -20,58 +28,113 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # Flask server for Render/Cron-job pings
 app = Flask(__name__)
 @app.route('/')
-def home(): return "Bot is Running"
+def home(): 
+    return "Bot is Running"
 
 def run_flask():
-    app.run(host="0.0.0.0", port=8080)
+    # Render uses the PORT environment variable
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
 
-# 2. Bot Logic
+# --- 2. EMAIL UTILITY ---
+def send_email(subject, body):
+    msg = MIMEMultipart()
+    msg['From'] = SENDER_EMAIL
+    msg['To'] = RECEIVER_EMAIL
+    msg['Subject'] = subject
+    msg.attach(MIMEText(body, 'plain'))
+    try:
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()
+        server.login(SENDER_EMAIL, SENDER_PASSWORD)
+        server.send_message(msg)
+        server.quit()
+        return True
+    except Exception as e:
+        print(f"Email Error: {e}")
+        return False
+
+# --- 3. BOT LOGIC ---
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    bot.reply_to(message, "Welcome! Please upload your Thesis chapter (as a PDF or text). I will analyze it and generate defense questions.")
+    bot.reply_to(message, "Welcome! Please upload your Thesis chapter (PDF or Text). I will analyze it, generate defense questions, and email them to you.")
 
 @bot.message_handler(content_types=['document'])
 def handle_document(message):
     file_info = bot.get_file(message.document.file_id)
     downloaded_file = bot.download_file(file_info.file_path)
     
-    # In a real app, use PyMuPDF to extract text from PDF. 
-    # For now, we assume it's a text-based document:
-    content = downloaded_file.decode('utf-8')
-    user_id = message.from_user.id
+    filename = message.document.file_name.lower()
+    content = ""
 
-    bot.reply_to(message, "Processing chapter... please wait.")
+    bot.reply_to(message, "📄 Reading your file... please wait.")
 
-    # 3. Gemini Brain: Generate Questions
-    prompt = f"""
-    You are a PhD Examiner. Read this thesis chapter and generate 5 difficult 
-    defense questions that test the validity and methodology. 
-    Explain why you are asking each question.
-    THESIS CONTENT: {content[:10000]} 
-    """
-    response = model.generate_content(prompt)
-    questions = response.text
+    try:
+        # Check if file is PDF
+        if filename.endswith('.pdf'):
+            # Use PyMuPDF to extract text from the PDF stream
+            with fitz.open(stream=downloaded_file, filetype="pdf") as doc:
+                for page in doc:
+                    content += page.get_text()
+        # Check if file is TXT
+        elif filename.endswith('.txt'):
+            content = downloaded_file.decode('utf-8')
+        else:
+            bot.reply_to(message, "❌ I only support PDF or .txt files.")
+            return
 
-    # 4. Supabase: Save to "Learn" and remember
-    data = {
-        "user_id": str(user_id),
-        "chapter_title": message.document.file_name,
-        "content": content,
-        "questions": questions
-    }
-    supabase.table("theses").insert(data).execute()
+        if not content.strip():
+            bot.reply_to(message, "⚠️ I couldn't find any text in that file.")
+            return
 
-    bot.reply_to(message, f"**Generated Defense Questions:**\n\n{questions}")
+        user_id = message.from_user.id
 
-# Start the Keep-Alive server
+        # 1. Gemini Brain: Generate Questions
+        prompt = f"""
+        You are a PhD Examiner. Read this thesis chapter and:
+        1. Generate 5 difficult defense questions.
+        2. Provide a 'Model Answer' for each question.
+        3. Explain the academic logic behind each question.
+        
+        THESIS CONTENT: {content[:15000]} 
+        """
+        response = model.generate_content(prompt)
+        analysis_results = response.text
+
+        # 2. Supabase: Save for learning/history
+        data = {
+            "user_id": str(user_id),
+            "chapter_title": filename,
+            "content": content[:5000], # Store preview to stay within DB limits
+            "questions": analysis_results
+        }
+        supabase.table("theses").insert(data).execute()
+
+        # 3. Email the results
+        email_sent = send_email(f"Thesis Defense Prep: {filename}", analysis_results)
+
+        # 4. Final Reply
+        final_reply = f"**Generated Defense Questions:**\n\n{analysis_results[:1000]}..." 
+        if email_sent:
+            final_reply += f"\n\n✅ The full report has been sent to {RECEIVER_EMAIL}."
+        else:
+            final_reply += "\n\n⚠️ Analysis complete but email failed to send."
+            
+        bot.reply_to(message, final_reply)
+
+    except Exception as e:
+        bot.reply_to(message, f"❌ An error occurred: {str(e)}")
+
+# --- 4. START THE BOT ---
 if __name__ == "__main__":
+    # Start Flask in background
     t = Thread(target=run_flask)
     t.daemon = True
     t.start()
 
     print("Bot is starting...")
-
-try:
-    bot.infinity_polling(skip_pending=True)
-except Exception as e:
-    print(f"Error: {e}")
+    try:
+        # skip_pending=True prevents 409 Conflict errors
+        bot.infinity_polling(skip_pending=True)
+    except Exception as e:
+        print(f"Polling Error: {e}")
