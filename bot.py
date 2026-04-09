@@ -9,6 +9,8 @@ from threading import Thread
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+import requests
+import time
 
 # --- 1. CONFIGURATION ---
 TOKEN = os.environ.get('TELEGRAM_TOKEN')
@@ -18,6 +20,7 @@ SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
 SENDER_EMAIL = os.environ.get('SENDER_EMAIL')
 SENDER_PASSWORD = os.environ.get('SENDER_PASSWORD')
 RECEIVER_EMAIL = os.environ.get('RECEIVER_EMAIL')
+RENDER_EXTERNAL_URL = os.environ.get('RENDER_EXTERNAL_URL')
 
 # Initialize Clients
 bot = telebot.TeleBot(TOKEN)
@@ -35,6 +38,18 @@ def run_flask():
     # Render uses the PORT environment variable
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
+
+def self_ping():
+    while True:
+        try:
+            if RENDER_EXTERNAL_URL:
+                requests.get(RENDER_EXTERNAL_URL)
+                print("Self-ping successful")
+            else:
+                print("RENDER_EXTERNAL_URL not set")
+        except Exception as e:
+            print(f"Self-ping error: {e}")
+        time.sleep(600)  # 10 minutes
 
 # --- 2. EMAIL UTILITY ---
 def send_email(subject, body):
@@ -92,7 +107,7 @@ def handle_document(message):
         # 1. Gemini Brain: Generate Questions
         prompt = f"""
         You are a PhD Examiner. Read this thesis chapter and:
-        1. Generate 5 difficult defense questions.
+        1. Generate 10 difficult defense questions.
         2. Provide a 'Model Answer' for each question.
         3. Explain the academic logic behind each question.
         
@@ -128,9 +143,14 @@ def handle_document(message):
 # --- 4. START THE BOT ---
 if __name__ == "__main__":
     # Start Flask in background
-    t = Thread(target=run_flask)
-    t.daemon = True
-    t.start()
+    t1 = Thread(target=run_flask)
+    t1.daemon = True
+    t1.start()
+
+    # Start self-ping in background
+    t2 = Thread(target=self_ping)
+    t2.daemon = True
+    t2.start()
 
     print("Bot is starting...")
     try:
