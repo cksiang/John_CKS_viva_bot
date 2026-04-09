@@ -3,3 +3,4 @@ pyTelegramBotAPI
 google-generativeai
 supabase
 flask
+requests
