@@ -25,7 +25,7 @@ RENDER_EXTERNAL_URL = os.environ.get('RENDER_EXTERNAL_URL')
 # Initialize Clients
 bot = telebot.TeleBot(TOKEN)
 genai.configure(api_key=GEMINI_KEY)
-model = genai.GenerativeModel('gemini-2.5-flash)
+model = genai.GenerativeModel('gemini-2.5-flash')
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Flask server for Render/Cron-job pings
